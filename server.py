@@ -40,10 +40,15 @@ def handle_validate(iuser, imagic):
     """Decide if the combination of user and magic is valid"""
     ## alter as required
     #select count(*) from session
-    session = cursor.execute('select * from session where userid==? AND magic==? ').fetchone()
-
+    print('iuser-------------',iuser) 
+    print('imagic-------------',imagic) 
+    userid = cursor.execute('select userid from users where username == ?',(iuser,)).fetchone()[0]
+    session = cursor.execute('select * from session  where userid==? AND magic ==?',(userid,imagic)).fetchone()
+    print('session-------------',session)
     #if (iuser == 'test') and (imagic == '1234567890'):
-    if session is not None:
+    now = int(time.time())
+    #If the session exists and it is activated or not expired, it is validated
+    if session is not None and (session[4]== 0 or session[4]>= now):
         return True
     else:
         return False
@@ -51,6 +56,9 @@ def handle_validate(iuser, imagic):
 
 def handle_delete_session(iuser, imagic):
     """Remove the combination of user and magic from the data base, ending the login"""
+    userid = cursor.execute('select userid from users where username ==?',(iuser,)).fetchone()[0]
+    cursor.execute('delete from session where userid==? AND magic==? ',(userid,imagic))
+    coon.commit()
     return
 
 def handle_login_request(iuser, imagic, parameters):
@@ -70,26 +78,26 @@ def handle_login_request(iuser, imagic, parameters):
 
     # check if username input is none.
     if 'usernameinput' not in parameters:
-        user = ''
+        user = '!'
         magic = ''
         response.append(build_response_refill('message', 'Input Error: Username is blank.'))
         return [user,magic,response] 
     
     uname = parameters['usernameinput'][0]
 
-    query = cursor.execute('select * from users where username=="'+uname+'"').fetchone()
+    query = cursor.execute('select * from users where username==?',(uname,)).fetchone()
     
     """if parameters['usernameinput'][0] == 'test': ## The user is valid
         response.append(build_response_redirect('/page.html'))
         user = 'test'
         magic = '1234567890'"""
-    # If there exists such a user, we randomly generate a magic number for it
-    if 'passwordinput' not in parameters:
+
+    if 'passwordinput' not in parameters or query is None:
         user = ''
         magic = ''
-        response.append(build_response_refill('message', 'Input Error: Password is blank.'))
+        response.append(build_response_refill('message', 'Input Error: Username or Password is wrong.'))
         return [user,magic,response] 
-    # If the password matches
+    # If there exists such a user and the password matches we randomly generate a magic number for it
     if query[2]==parameters['passwordinput'][0]:
         response.append(build_response_redirect('/page.html'))
         user = uname
@@ -99,7 +107,7 @@ def handle_login_request(iuser, imagic, parameters):
         now = int(time.time())
         # session duratation is forever.
         session =(sid,query[0],magic,now,0)
-        cursor.execute('INSERT INTO sessions VALUES (?,?,?,?,?)',session)
+        cursor.execute('INSERT INTO session VALUES (?,?,?,?,?)',session)
         coon.commit()
         
 
@@ -122,12 +130,24 @@ def handle_add_request(iuser, imagic, parameters):
         #Invalid sessions redirect to login
         response.append(build_response_redirect('/index.html'))
     else: ## a valid session so process the addition of the entry.
-        loc = parameters['locationinput'][0]
-        occupancy = parameters['occupancyinput'][0]
-        typeinput = parameters['occupancyinput'][0]
-        cursor.execute("INSERT INTO traffic VALUES (7, 'James', 24, 'Houston', 10000.00 );")        
-        response.append(build_response_refill('message', 'Entry added.'))
-        response.append(build_response_refill('total', '0'))
+        if 'locationinput' not in parameters:
+            response.append(build_response_refill('message', 'Location entry can not be null.'))
+ 
+        else:
+            n = cursor.execute('select count(*) from traffic').fetchone()[0]
+            n  = 0 if n==None else n
+            sid = int(n)
+            now =int(time.time())
+            typeinput = parameters['typeinput'][0]
+            loc = parameters['locationinput'][0]
+            occupancy = parameters['occupancyinput'][0]
+            mode =1
+            rec = (n,sid,now,typeinput,occupancy,loc,mode)
+            cursor.execute("INSERT INTO traffic VALUES (?,?,?,?,?,?,? );",rec)
+            coon.commit()        
+            response.append(build_response_refill('message', 'Entry added.'))
+            response.append(build_response_refill('total', n+1))
+
     user = ''
     magic = ''
     return [user, magic, response]
@@ -146,8 +166,22 @@ def handle_undo_request(iuser, imagic, parameters):
         #Invalid sessions redirect to login
         response.append(build_response_redirect('/index.html'))
     else: ## a valid session so process the recording of the entry.
-        response.append(build_response_refill('message', 'Entry Un-done.'))
-        response.append(build_response_refill('total', '0'))
+        if 'locationinput' not in parameters:
+            response.append(build_response_refill('message', 'Location entry can not be null.'))
+            
+        else:
+            typeinput = parameters['typeinput'][0]
+            loc = parameters['locationinput'][0]
+            
+            occupancy = parameters['occupancyinput'][0] 
+            cursor.execute('delete from traffic where recordid= (select max(recordid) from traffic where type==? AND location==? AND occupancy==?)',(typeinput,loc,occupancy))
+            coon.commit()
+            n = cursor.execute('select count(*) from traffic').fetchone()[0]
+            n  = 0 if n==None else n
+            n = int(n)
+            response.append(build_response_refill('message', 'Entry Un-done.'))
+            response.append(build_response_refill('total', n))   
+
     user = ''
     magic = ''
     return [user, magic, response]
@@ -173,6 +207,10 @@ def handle_logout_request(iuser, imagic, parameters):
        And that the session magic is revoked."""
     response = []
     ## alter as required
+    now = int(time.time())
+    userid = cursor.execute('select userid from users where username = ?',(iuser,)).fetchone()[0]
+    cursor.execute('update session set end=? where userid=? and magic=? ',(now,userid,imagic));
+    coon.commit()
     response.append(build_response_redirect('/index.html'))
     user = '!'
     magic = ''
@@ -188,17 +226,26 @@ def handle_summary_request(iuser, imagic, parameters):
     if handle_validate(iuser, imagic) != True:
         response.append(build_response_redirect('/index.html'))
     else:
-        response.append(build_response_refill('sum_car', '0'))
-        response.append(build_response_refill('sum_taxi', '0'))
-        response.append(build_response_refill('sum_bus', '0'))
-        response.append(build_response_refill('sum_motorbike', '0'))
-        response.append(build_response_refill('sum_bicycle', '0'))
-        response.append(build_response_refill('sum_van', '0'))
-        response.append(build_response_refill('sum_truck', '0'))
-        response.append(build_response_refill('sum_other', '0'))
-        response.append(build_response_refill('total', '0'))
-        user = ''
-        magic = ''
+       
+        sum_dict={'car':0,'taxi':0,'bus':0,'motorbike':0,'bicycle':0,'van':0,'truck':0,'other':0,'total':0}
+        tmp= dict(cursor.execute('select type,count(*) from traffic group by type').fetchall())
+        sum_dict.update(tmp)
+        tmp = cursor.execute('select count(*) from traffic').fetchone()[0]
+        sum_dict['total']=tmp
+        response.append(build_response_refill('sum_car', sum_dict['car']))
+        response.append(build_response_refill('sum_taxi', sum_dict['taxi']))
+        response.append(build_response_refill('sum_bus', sum_dict['bus']))
+        response.append(build_response_refill('sum_motorbike', sum_dict['motorbike']))
+        response.append(build_response_refill('sum_bicycle', sum_dict['bicycle']))
+        response.append(build_response_refill('sum_van', sum_dict['van']))
+        response.append(build_response_refill('sum_truck', sum_dict['truck']))
+        response.append(build_response_refill('sum_other', sum_dict['other']))
+        response.append(build_response_refill('total', sum_dict['total']))
+        user = iuser
+        magic = imagic
+        return [user, magic, response]
+    user = ''
+    magic = ''
     return [user, magic, response]
 
 
