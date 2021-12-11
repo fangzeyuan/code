@@ -13,7 +13,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer # the heavy lifting o
 import urllib # some url parsing support
 import json # support for json encoding
 import sys # needed for agument handling
+import sqlite3
+import random 
+import time
 
+
+#connect the database and create a cursor
+coon = sqlite3.connect('traffic.db')
+cursor = coon.cursor()
 
 def build_response_refill(where, what):
     """This function builds a refill action that allows part of the
@@ -32,7 +39,11 @@ def build_response_redirect(where):
 def handle_validate(iuser, imagic):
     """Decide if the combination of user and magic is valid"""
     ## alter as required
-    if (iuser == 'test') and (imagic == '1234567890'):
+    #select count(*) from session
+    session = cursor.execute('select * from session where userid==? AND magic==? ').fetchone()
+
+    #if (iuser == 'test') and (imagic == '1234567890'):
+    if session is not None:
         return True
     else:
         return False
@@ -48,16 +59,50 @@ def handle_login_request(iuser, imagic, parameters):
        valid and if so, create a suitable session record in the database
        with a random magic identifier that is returned.
        Return the username, magic identifier and the response action set."""
+    
+    
     if handle_validate(iuser, imagic) == True:
         # the user is already logged in, so end the existing session.
         handle_delete_session(iuser, imagic)
 
     response = []
     ## alter as required
-    if parameters['usernameinput'][0] == 'test': ## The user is valid
+
+    # check if username input is none.
+    if 'usernameinput' not in parameters:
+        user = ''
+        magic = ''
+        response.append(build_response_refill('message', 'Input Error: Username is blank.'))
+        return [user,magic,response] 
+    
+    uname = parameters['usernameinput'][0]
+
+    query = cursor.execute('select * from users where username=="'+uname+'"').fetchone()
+    
+    """if parameters['usernameinput'][0] == 'test': ## The user is valid
         response.append(build_response_redirect('/page.html'))
         user = 'test'
-        magic = '1234567890'
+        magic = '1234567890'"""
+    # If there exists such a user, we randomly generate a magic number for it
+    if 'passwordinput' not in parameters:
+        user = ''
+        magic = ''
+        response.append(build_response_refill('message', 'Input Error: Password is blank.'))
+        return [user,magic,response] 
+    # If the password matches
+    if query[2]==parameters['passwordinput'][0]:
+        response.append(build_response_redirect('/page.html'))
+        user = uname
+        magic = random.randint(1000000000,9999999999)
+        sid = cursor.execute('SELECT COUNT(*) FROM session').fetchone()[0]
+        sid += 1 
+        now = int(time.time())
+        # session duratation is forever.
+        session =(sid,query[0],magic,now,0)
+        cursor.execute('INSERT INTO sessions VALUES (?,?,?,?,?)',session)
+        coon.commit()
+        
+
     else: ## The user is not valid
         response.append(build_response_refill('message', 'Invalid password'))
         user = '!'
@@ -77,6 +122,10 @@ def handle_add_request(iuser, imagic, parameters):
         #Invalid sessions redirect to login
         response.append(build_response_redirect('/index.html'))
     else: ## a valid session so process the addition of the entry.
+        loc = parameters['locationinput'][0]
+        occupancy = parameters['occupancyinput'][0]
+        typeinput = parameters['occupancyinput'][0]
+        cursor.execute("INSERT INTO traffic VALUES (7, 'James', 24, 'Houston', 10000.00 );")        
         response.append(build_response_refill('message', 'Entry added.'))
         response.append(build_response_refill('total', '0'))
     user = ''
