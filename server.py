@@ -16,11 +16,115 @@ import sys # needed for agument handling
 import sqlite3
 import random 
 import time
+from datetime import datetime,timedelta,date
+import functools
+from collections import defaultdict
 
 
 #connect the database and create a cursor
 coon = sqlite3.connect('traffic.db')
 cursor = coon.cursor()
+
+class DateTransformer:
+    '''
+   #last_login =0
+   # last_logout = 0
+    last_month_end =0 
+    last_month_start =0
+    last_week_start =0 
+    last_week_end =0
+    day = 0
+    week = 0
+    month = 0
+    records = 0'''
+    def __init__(self,start,end,records):
+        self.records = records
+        #self.last_login = start
+        #self.last_logout =end
+        end = datetime.fromtimestamp(end) 
+        last_day_start = end - timedelta(minutes=end.minute,hours=end.hour,seconds=end.second)
+        last_day_end =  last_day_start + timedelta(days=1)
+        last_week_start = end - timedelta(days=end.weekday() + 7,minutes=end.minute,hours=end.hour,seconds=end.second)
+        last_week_end = end - timedelta(days=end.weekday() + 1,minutes=end.minute,hours=end.hour,seconds=end.second)
+        this_month_start = datetime(end.year, end.month, 1)
+       # this_month_end = datetime(end.year, end.month + 1 , 1) - timedelta(days=1)
+        last_month_end = this_month_start - timedelta(days=1)
+        last_month_start = datetime(last_month_end.year, last_month_end.month, 1)
+        self.last_month_end=last_month_end
+        self.last_month_start = last_month_start
+        self.last_week_start = last_week_start
+        self.last_week_end = last_week_end
+        self.last_day_start = last_day_start
+        self.last_day_end = last_day_end
+        '''print("last w start",last_week_start)
+        print("last w end",last_week_end)
+        print("last m start",last_month_start)
+        print("last m end",last_month_end)'''
+    def set_day(self):
+        '''day =  round((self.last_logout-self.last_login)/3600,1)
+        self.day = day'''
+        day =0
+        for rec in self.records:
+            start, end = rec
+            if start ==0 or end==0:
+                continue
+            start = datetime.fromtimestamp(start)
+            end = datetime.fromtimestamp(end)
+          #  print(start,"  ",self.last_day_start,"  ",end,"  ",self.last_day_end)
+            if max(start , self.last_day_start) <= min(end, self.last_day_end):
+                #considering boundary 
+                if start < self.last_day_start:
+                    start = self.last_day_start
+                if end >  self.last_day_end:
+                    end = self.last_day_end
+                day += round((end-start).seconds/3600,1)
+        self.day = day
+    def set_week(self):
+        week =0
+        for rec in self.records:
+            start, end = rec
+            if start ==0 or end==0:
+                continue
+            start = datetime.fromtimestamp(start)
+            end = datetime.fromtimestamp(end)
+           # print(start,"  ",self.last_week_start,"  ",end,"  ",self.last_week_end)
+            if max(start , self.last_week_start) <= min(end, self.last_week_end):
+                #considering boundary 
+                if start < self.last_week_start:
+                    start = self.last_week_start
+                if end >  self.last_week_end:
+                    end = self.last_week_end
+                week += round((end-start).seconds/3600,1)
+        self.week = week
+        
+    def set_month(self):
+        month =0
+        for rec in self.records:
+            start, end = rec
+            if start ==0 or end==0:
+                continue
+            start = datetime.fromtimestamp(start)
+            end = datetime.fromtimestamp(end)
+            # if overlapping 
+            if max(start,self.last_month_start) <= min(end , self.last_month_end):
+                #considering boundary 
+                if start < self.last_month_start:
+                    start = self.last_month_start
+                if end >  self.last_month_end:
+                    end = self.last_month_end
+                month += round((end-start).seconds/3600,1)
+        self.month = month
+    def get_summary(self):  
+        self.set_day()
+        self.set_month()
+        self.set_week()
+        summary = (self.day,self.week,self.month)
+        summary= list(map(str,summary))
+        return ','.join(summary)+'\n'
+    
+
+
+    
 
 def build_response_refill(where, what):
     """This function builds a refill action that allows part of the
@@ -42,7 +146,11 @@ def handle_validate(iuser, imagic):
     #select count(*) from session
     print('iuser-------------',iuser) 
     print('imagic-------------',imagic) 
-    userid = cursor.execute('select userid from users where username == ?',(iuser,)).fetchone()[0]
+    userid = cursor.execute('select userid from users where username == ?',(iuser,)).fetchone()
+
+    if userid is None:
+        return False
+    userid =userid[0]
     session = cursor.execute('select * from session  where userid==? AND magic ==?',(userid,imagic)).fetchone()
     print('session-------------',session)
     #if (iuser == 'test') and (imagic == '1234567890'):
@@ -93,7 +201,7 @@ def handle_login_request(iuser, imagic, parameters):
         magic = '1234567890'"""
 
     if 'passwordinput' not in parameters or query is None:
-        user = ''
+        user = '!'
         magic = ''
         response.append(build_response_refill('message', 'Input Error: Username or Password is wrong.'))
         return [user,magic,response] 
@@ -241,14 +349,69 @@ def handle_summary_request(iuser, imagic, parameters):
         response.append(build_response_refill('sum_truck', sum_dict['truck']))
         response.append(build_response_refill('sum_other', sum_dict['other']))
         response.append(build_response_refill('total', sum_dict['total']))
-        user = iuser
-        magic = imagic
-        return [user, magic, response]
+   
     user = ''
     magic = ''
     return [user, magic, response]
 
+def handle_traffic_csv_request(iuser, imagic):
+    response=[]
+    info = ''
+    if handle_validate(iuser, imagic) != True:
+        response.append(build_response_redirect('/index.html'))
+    else:
+        records = cursor.execute('select location,type,occupancy from traffic').fetchall()
+        records2= [ (x,y,'0','0','0','0') for x,y,z in records]
+        records3 = []
+        for r1,r2 in zip(records,records2):
+            occup = r1[2]
+            if isinstance(occup,int):
+                tmp = list(r2)
+                tmp[occup+1] ='1'
+                r2 = tuple(tmp)
+            records3.append(r2)
+        for rec in  records3:
+            info += ','.join(rec) + '\n'
+    user = ''
+    magic = ''
+    return [user, magic, response,info]
+def handle_hour_csv_request(iuser,imagic):
+    '''This code handles hour.csv request, we first check whether the user is validate '''
+    response=[]
+    info = ''
+    if handle_validate(iuser, imagic) != True:
+        response.append(build_response_redirect('/index.html'))
+    else:
+        last  =cursor.execute('select u.username,start, end from users u left join session s on u.userid=s.userid where not exists(select * from session where s. end<end)').fetchall()
+        '''records = cursor.execute('select u.username,CASE WHEN count(*) != 0 THEN group_concat(start) ELSE 0 END,CASE WHEN count(*)!=0 THEN group_concat(end)'+
+            +'ELSE 0 END from users u left join session s on u.userid = s.userid ').fetchall()
+        '''
+        last = [ (k,0,0) if v1 is None else (k,v1,v2) for (k,v1,v2) in last]
+        last_dict = {}
+        for k,v1,v2 in last:
+            last_dict[k]= (v1,v2)
 
+     
+        records = cursor.execute('select u.username,start,end from users u left join session s on u.userid = s.userid ').fetchall()
+        records_dict={}
+        for k,v1,v2 in records:
+            if v1 is None :
+                v1 =0
+            if v2 is None :
+                v2 = 0 
+            if k not in records_dict:
+                records_dict[k]=[]
+                records_dict[k].append((v1,v2))
+            else:
+               records_dict[k].append((v1,v2)) 
+        for k in last_dict.keys():
+            dt = DateTransformer(last_dict[k][0],last_dict[k][1],records_dict[k])
+            info+= k+',' + dt.get_summary()
+          
+                
+    user = ''
+    magic = ''
+    return [user, magic, response,info]
 # HTTPRequestHandler class
 class myHTTPServer_RequestHandler(BaseHTTPRequestHandler):
 
@@ -384,8 +547,14 @@ class myHTTPServer_RequestHandler(BaseHTTPRequestHandler):
             ## if we get here, the user is looking for a statistics file
             ## this is where requests for /statistics/hours.csv should be handled.
             ## you should check a valid user is logged in. You are encouraged to wrap this behavour in a function.
+
+            [user, magic, response,info] = handle_hour_csv_request(user_magic[0], user_magic[1])
+            if user == '!': # Check if we've been tasked with discarding the cookies.
+                set_cookies(self, '', '') 
             text = "Username,Day,Week,Month\n"
-            text += "test1,0.0,0.0,0.0\n" # not real data
+            text+=info
+
+            '''text += "test1,0.0,0.0,0.0\n" # not real data
             text += "test2,0.0,0.0,0.0\n"
             text += "test3,0.0,0.0,0.0\n"
             text += "test4,0.0,0.0,0.0\n"
@@ -394,7 +563,8 @@ class myHTTPServer_RequestHandler(BaseHTTPRequestHandler):
             text += "test7,0.0,0.0,0.0\n"
             text += "test8,0.0,0.0,0.0\n"
             text += "test9,0.0,0.0,0.0\n"
-            text += "test10,0.0,0.0,0.0\n"       
+            text += "test10,0.0,0.0,0.0\n"  '''     
+
             encoded = bytes(text, 'utf-8')
             self.send_response(200)
             self.send_header('Content-type', 'text/csv')
@@ -407,9 +577,12 @@ class myHTTPServer_RequestHandler(BaseHTTPRequestHandler):
             ## if we get here, the user is looking for a statistics file
             ## this is where requests for  /statistics/traffic.csv should be handled.
             ## you should check a valid user is checked in. You are encouraged to wrap this behavour in a function.
-            text = "This should be the content of the csv file."
+            [user, magic, response,info] = handle_traffic_csv_request(user_magic[0], user_magic[1])
+            if user == '!': # Check if we've been tasked with discarding the cookies.
+                set_cookies(self, '', '')            
             text = "Location,Type,Occupancy1,Occupancy2,Occupancy3,Occupancy4\n"
-            text += '"Main Road",car,0,0,0,0\n' # not real data 
+            text +=info
+            #text += '"Main Road",car,0,0,0,0\n' # not real datad 
             encoded = bytes(text, 'utf-8')
             self.send_response(200)
             self.send_header('Content-type', 'text/csv')
